@@ -1,5 +1,6 @@
 package de.fhg.iais.roberta.connection.wired;
 
+import de.fhg.iais.roberta.connection.wired.spikeHub.SpikeHub;
 import static de.fhg.iais.roberta.util.WiredRobotIdFileHelper.load;
 
 import java.io.BufferedReader;
@@ -75,6 +76,9 @@ public class SerialRobotDetector implements IDetector {
                         break;
                     case MICROBIT:
                         detectedRobots.add(new Microbit(device.port));
+                        break;
+                    case SPIKEHUB:
+                        detectedRobots.add(new SpikeHub(wiredRobotType, device.port));
                         break;
                     case EV3:
                     case NONE:
