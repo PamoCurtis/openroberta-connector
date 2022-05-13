@@ -2,6 +2,8 @@ package de.fhg.iais.roberta.connection.wired.spikeHub;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,9 +29,9 @@ public class SpikeHubCommunicator {
 
     private final IWiredRobot robot;
     private final int slotId = 0;
+    private final byte end = 0x0D;
 
     private SerialPort comPort;
-    private byte[] receiveBuffer;
 
     SpikeHubCommunicator(IWiredRobot robot) {
         this.robot = robot;
@@ -38,10 +40,17 @@ public class SpikeHubCommunicator {
     public Pair<Integer, String> handleUpload(String portName, String absolutePath) {
         initSerialPort(portName);
         try {
-            JSONObject payload = createJsonPayload("start_write_program", absolutePath);
-            LOG.info("JSON Payload: {}", payload);
+            JSONObject payload;
+            payload = createJsonPayload("stop_execution", absolutePath);
+            uploadPayload(payload);
 
-        } catch ( IOException e ) {
+            payload = createJsonPayload("start_write_program", absolutePath);
+            uploadPayload(payload);
+
+            payload = createJsonPayload("write_package", absolutePath);
+            uploadPayload(payload);
+
+        } catch ( Exception e ) {
             return new Pair<>(1, "Something went wrong while uploading the file.");
         }
 
@@ -72,7 +81,7 @@ public class SpikeHubCommunicator {
         return deviceInfo;
     }
 
-    private JSONObject createJsonPayload(String mode, String absolutePath) throws IOException {
+    private JSONObject createJsonPayload(String mode, String absolutePath) throws Exception {
         return createJsonPayload(mode, absolutePath, new JSONObject());
     }
 
@@ -110,19 +119,77 @@ public class SpikeHubCommunicator {
                     payload.put("p", params);
                     payload.put("i", id);
             }
+            LOG.info("JSON Payload: {}", payload);
 
-        } catch ( JSONException | IOException e ) {
+        } catch ( Exception e ) {
             LOG.error("Error while creating Payload for Spike Hub: {}", e.getMessage());
         }
         return payload;
     }
 
-    private void uploadFile(JSONObject payload) {
+    private JSONObject uploadPayload(JSONObject payload) throws IOException {
+        OutputStream outputStream = this.comPort.getOutputStream();
         byte[] bytePayload = payload.toString().getBytes(StandardCharsets.UTF_8);
-        byte[] end = new byte[0x0D];
-        this.comPort.writeBytes(bytePayload, bytePayload.length);
-        this.comPort.writeBytes(end, end.length);
+        outputStream.write(bytePayload);
+        outputStream.write(end);
+        outputStream.close();
+        return receiveResponse(payload.getString("i"));
+    }
 
+    private JSONObject receiveResponse(String id) throws IOException {
+
+        while ( true ) {
+            JSONObject response = receiveMessage(1);
+
+            if ( response.has("i") && response.getString("i").equals(id) ) {
+                if ( response.has("e") ) {
+                    return null;
+                }
+                LOG.info(response.getString("r"));
+                return response.getJSONObject("r");
+
+            }
+            LOG.info("Response while waiting: {}", response);
+        }
+    }
+
+    private JSONObject receiveMessage(int timeout) throws IOException {
+        InputStream inputStream = this.comPort.getInputStream();
+        long startTime = System.currentTimeMillis() / 1000;
+        int elapsed = 0;
+        byte[] receiveBuffer;
+        String result;
+
+        while ( true ) {
+            receiveBuffer = new byte[inputStream.available()];
+            int pos = findEndValue(receiveBuffer);
+
+            if ( pos >= 0 ) {
+                result = receiveBuffer.toString().substring(0, pos);
+
+                try {
+                    JSONObject response = new JSONObject(result);
+                    return response;
+                } catch ( JSONException e ) {
+                    LOG.error("Cannot parse JSON: {}", result);
+                }
+
+            }
+
+            if ( pos >= inputStream.available() ) {
+                inputStream.read(receiveBuffer);
+            }
+        }
+        return null;
+    }
+
+    private int findEndValue(byte[] receiveBuffer) {
+        for ( int pos = 0; pos < receiveBuffer.length; pos++ ) {
+            if ( Byte.compare(receiveBuffer[pos], end) == 0 ) {
+                return pos;
+            }
+        }
+        return -1;
     }
 
     private byte[] encodeFileToBase64Binary(File file) {
@@ -139,6 +206,7 @@ public class SpikeHubCommunicator {
         portName = (SystemUtils.IS_OS_WINDOWS ? "" : "/dev/") + portName; // to hide the parameter, which should not be used
         this.comPort = SerialPort.getCommPort(portName);
         this.comPort.setBaudRate(115200);
+        this.comPort.openPort(0);
         LOG.info("Serial Communication is initialized: {} {} {}",
             this.comPort.getSystemPortName(),
             this.comPort.getDescriptivePortName(),
