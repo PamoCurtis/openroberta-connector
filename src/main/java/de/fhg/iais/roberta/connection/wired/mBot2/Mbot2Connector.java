@@ -67,7 +67,7 @@ public class Mbot2Connector extends AbstractConnector<Mbot2> {
                         LOG.info("Download user program");
                         try {
                             Pair<byte[], String> program = this.serverCommunicator.downloadProgram(this.brickData);
-                            File tmp = File.createTempFile(program.getSecond(), "");
+                            File tmp = File.createTempFile("mbot2_", program.getSecond());
                             tmp.deleteOnExit();
 
                             if ( !tmp.exists() ) {
@@ -80,6 +80,10 @@ public class Mbot2Connector extends AbstractConnector<Mbot2> {
 
                             this.fire(State.WAIT_UPLOAD);
                             Pair<Integer, String> result = this.mbot2comm.uploadFile(this.robot.getPort(), tmp.getAbsolutePath());
+                            if ( result.getFirst() != 0 ) {
+                                this.fire(State.ERROR_UPLOAD_TO_ROBOT.setAdditionalInfo(result.getSecond()));
+                                this.fire(State.WAIT_FOR_CMD);
+                            }
                         } catch ( FileNotFoundException e ) {
                             LOG.info("File not found: {}", e.getMessage());
                             this.fire(State.ERROR_UPLOAD_TO_ROBOT);
