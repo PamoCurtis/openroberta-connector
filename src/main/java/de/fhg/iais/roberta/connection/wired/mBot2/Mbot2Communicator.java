@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.lang3.SystemUtils;
 import org.json.JSONObject;
 import org.slf4j.Logger;
@@ -58,12 +59,17 @@ public class Mbot2Communicator {
 
         Pair<Integer, String> result;
         portName = (SystemUtils.IS_OS_WINDOWS ? "" : "/dev/") + portName; // to hide the parameter, which should not be used
-        initSerialPort(portName);
+        try {
+            initSerialPort(portName);
 
-        extractFileInformation(filePath);
-        generatePayloads();
+            extractFileInformation(filePath);
+            generatePayloads();
 
-        result = sendPayload();
+            result = sendPayload();
+        } catch ( Exception io ) {
+            result = new Pair<>(1, "Error while uploading file");
+            return result;
+        }
 
         return result;
     }
@@ -77,19 +83,15 @@ public class Mbot2Communicator {
         serialPort.setBaudRate(115200);
     }
 
-    private void extractFileInformation(String filePath) {
+    private void extractFileInformation(String filePath) throws IOException {
         File file = new File(filePath);
         this.absFilePath = file.getAbsolutePath();
         this.fileName = file.getName();
         Path path = Paths.get(this.absFilePath);
-        try {
-            byte[] tmp = Files.readAllBytes(path);
-
-            for ( byte value : tmp ) {
-                this.fileContent.add(value);
-            }
-        } catch ( IOException e ) {
-            LOG.error("Error while reading file content: " + e.getMessage());
+        byte[] tmp = Files.readAllBytes(path);
+        fileContent.clear();
+        for ( byte value : tmp ) {
+            this.fileContent.add(value);
         }
     }
 
@@ -97,7 +99,9 @@ public class Mbot2Communicator {
         List<Byte> dataFrame = new ArrayList<>();
         List<Byte> uploadFrame = new ArrayList<>();
         List<List<Byte>> fileDataFrame = new ArrayList<>();
-        byte[] modeUpload = new byte[] {(byte) 0xF3, (byte) 0xF6, 0x03, 0x00, 0x0D, 0x00, 0x00, 0x0D, (byte) 0xF4};
+        byte[] modeUpload = hexStringToByteArray("F3F603000D00000DF4");
+        byte[] disableReply1 = hexStringToByteArray("f3202d002804000027007472793a0a20202020696d706f727420636f6e6669670a6578636570743a0a2020202070617373b5f4");
+        byte[] disableReply2 = hexStringToByteArray("f33c49002804000043007472793a0a20202020636f6e6669672e77726974655f636f6e66696728227265706c5f656e61626c65222c2046616c7365290a6578636570743a0a202020207061737389f4");
         byte frameHeader = (byte) 0xF3;
         byte frameFooter = (byte) 0xF4;
         byte protocolId = 0x01;
@@ -109,20 +113,26 @@ public class Mbot2Communicator {
         byte fileDataChecksum;
         int frameSize;
 
+        payloads.clear();
         payloads.add(modeUpload);
+        payloads.add(disableReply1);
+        payloads.add(disableReply2);
+        payloads.add(modeUpload);
+        payloads.add(disableReply1);
+        payloads.add(disableReply2);
+
         fileDataFrame.add(generateHeader());
         fileDataFrame.addAll(generateBody());
 
         for ( List<Byte> frame : fileDataFrame ) {
-            frameSize = frame.size();
-            len1 = (byte) (frameSize % 256);
-            len2 = (byte) (frameSize / 256);
-
             uploadFrame.add(protocolId);
             uploadFrame.add(deviceId);
             uploadFrame.add(serviceId);
             uploadFrame.addAll(frame);
 
+            frameSize = uploadFrame.size();
+            len1 = (byte) (frameSize % 256);
+            len2 = (byte) (frameSize / 256);
             headerChecksum = (byte) (frameHeader + len1 + len2);
             fileDataChecksum = calculateChecksum(uploadFrame);
 
@@ -135,6 +145,9 @@ public class Mbot2Communicator {
             dataFrame.add(frameFooter);
 
             payloads.add(convertArrayListToByteArray(dataFrame));
+
+            dataFrame.clear();
+            uploadFrame.clear();
         }
 
     }
@@ -185,11 +198,13 @@ public class Mbot2Communicator {
 
         byte[] sentDataArray;
         int dataSizeToSend;
+        int maxSize = 0x80;
 
         for ( int sentData = 0x00; sentData < fileContent.size(); sentData += dataSizeToSend ) {
             frame = new ArrayList<>();
             data = new ArrayList<>();
-            dataSizeToSend = this.fileContent.size() - sentData % 0xFC;
+
+            dataSizeToSend = Math.min(maxSize, this.fileContent.size()-sentData);
             sentDataArray = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(sentData).array();
             for ( byte value : sentDataArray ) {
                 data.add(value);
@@ -233,23 +248,22 @@ public class Mbot2Communicator {
         return checksum;
     }
 
-    private Pair<Integer, String> sendPayload() {
-        Pair<Integer, String> result = new Pair<>(1, "");
+    private Pair<Integer, String> sendPayload(){
+        Pair<Integer, String> result = new Pair<>(0, "");
         if ( !serialPort.isOpen() ) {
             serialPort.openPort();
         }
         for ( byte[] payload : payloads ) {
             int pLength = payload.length;
-            if ( serialPort.writeBytes(payload, pLength) == pLength ) {
-
-                result = receiveAnswer();
-                if ( result.getFirst() != 0 ) {
-                    serialPort.closePort();
-                    break;
-                }
-            } else {
+            if ( serialPort.writeBytes(payload, pLength) != pLength ) {
                 serialPort.closePort();
                 result = new Pair<>(1, "Something went wrong while transmitting the payloads");
+                break;
+            }
+            LOG.info(Hex.encodeHexString(payload));
+            result = receiveAnswer();
+            if ( result.getFirst() != 0 ) {
+                serialPort.closePort();
                 break;
             }
         }
@@ -257,7 +271,7 @@ public class Mbot2Communicator {
     }
 
     private Pair<Integer, String> receiveAnswer() {
-        byte[] buf = new byte[1024];
+        byte[] buf = new byte[248];
         byte[] tmp;
         byte[] possibleResp = new byte[0];
         int end;
@@ -265,6 +279,8 @@ public class Mbot2Communicator {
         while ( bytesRead < buf.length ) {
             serialPort.readBytes(buf, 64);
             tmp = Arrays.copyOfRange(buf, bytesRead, bytesRead + 64);
+            LOG.info(Hex.encodeHexString(tmp));
+            LOG.info("read Bytes");
             bytesRead += 64;
             for ( int i = 0; i < 64; i++ ) {
                 if ( possibleResp.length > 0 ) {
@@ -296,8 +312,10 @@ public class Mbot2Communicator {
                     possibleResp = new byte[0];
                 }
             }
+
         }
-        return new Pair<>(1, "No answer received from the robot");
+        LOG.info("next Payload");
+        return new Pair<>(0, "No answer received from the robot");
     }
 
     private byte[] convertArrayListToByteArray(List<Byte> arrayList) {
@@ -308,24 +326,25 @@ public class Mbot2Communicator {
         return result;
     }
 
+    private byte[] hexStringToByteArray(String s) {
+        int len = s.length();
+        byte[] data = new byte[len / 2];
+        for ( int i = 0; i < len; i += 2 ) {
+            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
+                + Character.digit(s.charAt(i + 1), 16));
+        }
+        return data;
+    }
+
 //    private void addValuesToData(ArrayList<Byte> data, ArrayList<Byte> values, ArrayList<Byte>... optValues) {
 //        data.addAll(values);
 //        if ( optValues.length > 0 ) {
 //            for ( ArrayList<Byte> optValue : optValues ) {
+
 //                data.addAll(optValue);
 
 //            }
 
 //        }
-
-//    }
-//    private byte[] hexStringToByteArray(String s) {
-//        int len = s.length();
-//        byte[] data = new byte[len / 2];
-//        for ( int i = 0; i < len; i += 2 ) {
-//            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
-//                + Character.digit(s.charAt(i + 1), 16));
-//        }
-//        return data;
 //    }
 }
