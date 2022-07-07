@@ -11,13 +11,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.lang3.SystemUtils;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.fazecast.jSerialComm.SerialPort;
+import com.fazecast.jSerialComm.SerialPortInvalidPortException;
 
 import de.fhg.iais.roberta.connection.wired.IWiredRobot;
 import de.fhg.iais.roberta.util.Pair;
@@ -31,8 +31,7 @@ public class Mbot2Communicator {
     private SerialPort serialPort;
     private final List<byte[]> payloads = new ArrayList<>();
     private final List<Byte> fileContent = new ArrayList<>();
-    private String absFilePath;
-    private String fileName;
+    private final String fileName = "/flash/main.py";
 
     public Mbot2Communicator(IWiredRobot robot) {
         this.robot = robot;
@@ -66,28 +65,24 @@ public class Mbot2Communicator {
             generatePayloads();
 
             result = sendPayload();
-        } catch ( Exception io ) {
+        } catch ( Exception e ) {
             result = new Pair<>(1, "Error while uploading file");
-            return result;
         }
 
         return result;
     }
 
-    private void initSerialPort(String portName) {
+    private void initSerialPort(String portName) throws SerialPortInvalidPortException {
         if ( serialPort != null && serialPort.isOpen() ) {
             serialPort.closePort();
         }
-
         serialPort = SerialPort.getCommPort(portName);
         serialPort.setBaudRate(115200);
     }
 
     private void extractFileInformation(String filePath) throws IOException {
         File file = new File(filePath);
-        this.absFilePath = file.getAbsolutePath();
-        this.fileName = file.getName();
-        Path path = Paths.get(this.absFilePath);
+        Path path = Paths.get(file.getAbsolutePath());
         byte[] tmp = Files.readAllBytes(path);
         fileContent.clear();
         for ( byte value : tmp ) {
@@ -99,9 +94,7 @@ public class Mbot2Communicator {
         List<Byte> dataFrame = new ArrayList<>();
         List<Byte> uploadFrame = new ArrayList<>();
         List<List<Byte>> fileDataFrame = new ArrayList<>();
-        byte[] modeUpload = hexStringToByteArray("F3F603000D00000DF4");
-        byte[] disableReply1 = hexStringToByteArray("f3202d002804000027007472793a0a20202020696d706f727420636f6e6669670a6578636570743a0a2020202070617373b5f4");
-        byte[] disableReply2 = hexStringToByteArray("f33c49002804000043007472793a0a20202020636f6e6669672e77726974655f636f6e66696728227265706c5f656e61626c65222c2046616c7365290a6578636570743a0a202020207061737389f4");
+        byte[] modeUpload = new byte[] {(byte) 0xF3, (byte) 0xF6, 0x03, 0x00, 0x0D, 0x00, 0x00, 0x0D, (byte) 0xF4};
         byte frameHeader = (byte) 0xF3;
         byte frameFooter = (byte) 0xF4;
         byte protocolId = 0x01;
@@ -115,11 +108,6 @@ public class Mbot2Communicator {
 
         payloads.clear();
         payloads.add(modeUpload);
-        payloads.add(disableReply1);
-        payloads.add(disableReply2);
-        payloads.add(modeUpload);
-        payloads.add(disableReply1);
-        payloads.add(disableReply2);
 
         fileDataFrame.add(generateHeader());
         fileDataFrame.addAll(generateBody());
@@ -181,7 +169,7 @@ public class Mbot2Communicator {
         }
         frame.add(instructionId);
         frame.add((byte) data.size());
-        frame.add((byte) 0x00); //high-order bits should be always 0
+        frame.add((byte) 0x00);
         frame.addAll(data);
         return frame;
     }
@@ -248,74 +236,54 @@ public class Mbot2Communicator {
         return checksum;
     }
 
-    private Pair<Integer, String> sendPayload(){
-        Pair<Integer, String> result = new Pair<>(0, "");
+    private Pair<Integer, String> sendPayload() {
+        int payloadLength;
+        int writtenBytes;
         if ( !serialPort.isOpen() ) {
             serialPort.openPort();
         }
         for ( byte[] payload : payloads ) {
-            int pLength = payload.length;
-            if ( serialPort.writeBytes(payload, pLength) != pLength ) {
+            payloadLength = payload.length;
+            writtenBytes = serialPort.writeBytes(payload, payloadLength);
+            if ( writtenBytes != payloadLength || !(writtenBytes == payloadLength && receiveAnswer()) ) {
                 serialPort.closePort();
-                result = new Pair<>(1, "Something went wrong while transmitting the payloads");
-                break;
-            }
-            LOG.info(Hex.encodeHexString(payload));
-            result = receiveAnswer();
-            if ( result.getFirst() != 0 ) {
-                serialPort.closePort();
-                break;
+                return new Pair<>(1, "Something went wrong while uploading the program. If this happens again, please reconnect the robot with the computer and try again");
             }
         }
-        return result;
+        return new Pair<>(0, "Program successfully uploaded");
     }
 
-    private Pair<Integer, String> receiveAnswer() {
-        byte[] buf = new byte[248];
-        byte[] tmp;
-        byte[] possibleResp = new byte[0];
-        int end;
-        short bytesRead = 0;
-        while ( bytesRead < buf.length ) {
-            serialPort.readBytes(buf, 64);
-            tmp = Arrays.copyOfRange(buf, bytesRead, bytesRead + 64);
-            LOG.info(Hex.encodeHexString(tmp));
-            LOG.info("read Bytes");
-            bytesRead += 64;
-            for ( int i = 0; i < 64; i++ ) {
-                if ( possibleResp.length > 0 ) {
-                    if ( tmp[i + 12 - possibleResp.length - 1] == (byte) 0xF4 ) {
-                        end = i + 12 - possibleResp.length - 1;
-                        possibleResp = Arrays.copyOfRange(buf, bytesRead - possibleResp.length, end + bytesRead);
-                    } else {
-                        possibleResp = new byte[0];
-                        i = 0;
-                        continue;
+    private boolean receiveAnswer() {
+        byte[] buf = new byte[128];
+        byte[] response;
+        byte responseId = (byte) 0xF0;
+        byte uploadModeId = 0x0D;
+        byte ok = 0x00;
+        long time = System.currentTimeMillis();
+        while ( true ) {
+            serialPort.readBytes(buf, 128);
+            for ( int i = 0; i < buf.length; i++ ) {
+                if ( buf[i] != 0 ) {
+                    response = Arrays.copyOfRange(buf, i, buf.length - 1);
+                    if ( response[0] == (byte) 0xF3 ) {
+                        if ( response[i + 7] == responseId ) {
+                            if ( response[i + 10] == ok ) {
+                                return true;
+                            } else {
+                                LOG.info("Error: Package could not be delivered");
+                                return false;
+                            }
+                        } else if ( response[i + 7] == uploadModeId ) {
+                            return true;
+                        }
                     }
-                } else if ( tmp[i] == (byte) 0xF3 ) {
-                    if ( (i + 12) >= 64 ) {
-                        end = 63;
-                        possibleResp = Arrays.copyOfRange(buf, i + bytesRead, end + bytesRead);
-                        break;
-                    } else if ( tmp[i + 12] == (byte) 0xF4 ) {
-                        end = i + 12;
-                        possibleResp = Arrays.copyOfRange(buf, i + bytesRead, end + bytesRead);
-                    } else {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
-                if ( possibleResp[7] == (byte) 0xF0 ) {
-                    return possibleResp[10] == 0x00 ? new Pair<>(0, "Successfully transmitted package") : new Pair<>(1, "Error while transmitting package");
-                } else {
-                    possibleResp = new byte[0];
                 }
             }
-
+            if ( (System.currentTimeMillis()) - time > 2000 ) {
+                LOG.info("No response received");
+                return false;
+            }
         }
-        LOG.info("next Payload");
-        return new Pair<>(0, "No answer received from the robot");
     }
 
     private byte[] convertArrayListToByteArray(List<Byte> arrayList) {
@@ -335,16 +303,4 @@ public class Mbot2Communicator {
         }
         return data;
     }
-
-//    private void addValuesToData(ArrayList<Byte> data, ArrayList<Byte> values, ArrayList<Byte>... optValues) {
-//        data.addAll(values);
-//        if ( optValues.length > 0 ) {
-//            for ( ArrayList<Byte> optValue : optValues ) {
-
-//                data.addAll(optValue);
-
-//            }
-
-//        }
-//    }
 }
