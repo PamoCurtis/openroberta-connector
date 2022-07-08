@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.SystemUtils;
 import org.json.JSONObject;
 import org.slf4j.Logger;
@@ -31,7 +32,6 @@ public class Mbot2Communicator {
     private SerialPort serialPort;
     private final List<byte[]> payloads = new ArrayList<>();
     private final List<Byte> fileContent = new ArrayList<>();
-    private final String fileName = "/flash/main.py";
 
     public Mbot2Communicator(IWiredRobot robot) {
         this.robot = robot;
@@ -55,21 +55,15 @@ public class Mbot2Communicator {
      * step 5: receive ok
      */
     public Pair<Integer, String> uploadFile(String portName, String filePath) {
-
-        Pair<Integer, String> result;
         portName = (SystemUtils.IS_OS_WINDOWS ? "" : "/dev/") + portName; // to hide the parameter, which should not be used
         try {
             initSerialPort(portName);
-
             extractFileInformation(filePath);
             generatePayloads();
-
-            result = sendPayload();
+            return sendPayload();
         } catch ( Exception e ) {
-            result = new Pair<>(1, "Error while uploading file");
+            return new Pair<>(1, "Error while uploading file");
         }
-
-        return result;
     }
 
     private void initSerialPort(String portName) throws SerialPortInvalidPortException {
@@ -137,7 +131,6 @@ public class Mbot2Communicator {
             dataFrame.clear();
             uploadFrame.clear();
         }
-
     }
 
     /**
@@ -147,24 +140,21 @@ public class Mbot2Communicator {
      * File Name = max 256 Bytes. Absolute Path of file
      */
     private List<Byte> generateHeader() {
-
         List<Byte> frame = new ArrayList<>();
         List<Byte> data = new ArrayList<>();
 
+        String fileName = "/flash/main.py";
+        int fileSize = this.fileContent.size();
         byte instructionId = 0x01;
         byte fileType = 0x00;
-        int fileSize = this.fileContent.size();
         byte[] sizeByte = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(fileSize).array();
-        byte[] checksum = xor32BitChecksum();
 
         data.add(fileType);
         for ( byte value : sizeByte ) {
             data.add(value);
         }
-        for ( byte value : checksum ) {
-            data.add(value);
-        }
-        for ( byte value : this.fileName.getBytes() ) {
+        data.addAll(xor32BitChecksum());
+        for ( byte value : fileName.getBytes() ) {
             data.add(value);
         }
         frame.add(instructionId);
@@ -179,14 +169,13 @@ public class Mbot2Communicator {
      * File Block Data = Content of file, max 2^16 Bytes (length of instruction is 2 Bytes)
      */
     private List<List<Byte>> generateBody() {
-
         List<List<Byte>> bodyArr = new ArrayList<>();
         List<Byte> frame;
         List<Byte> data;
 
         byte[] sentDataArray;
         int dataSizeToSend;
-        int maxSize = 0x80;
+        int maxSize = 0x40;
 
         for ( int sentData = 0x00; sentData < fileContent.size(); sentData += dataSizeToSend ) {
             frame = new ArrayList<>();
@@ -204,11 +193,10 @@ public class Mbot2Communicator {
             frame.addAll(data);
             bodyArr.add(frame);
         }
-
         return bodyArr;
     }
 
-    private byte[] xor32BitChecksum() {
+    private List<Byte> xor32BitChecksum() {
         int fileSize = fileContent.size();
         byte[] checksum = new byte[] {0x00, 0x00, 0x00, 0x00};
         byte padding = (byte) (fileSize % 4);
@@ -223,8 +211,7 @@ public class Mbot2Communicator {
                 checksum[i] ^= fileContent.get(4 * (fileSize / 4) + i);
             }
         }
-
-        return checksum;
+        return Arrays.asList(ArrayUtils.toObject(checksum));
     }
 
     private byte calculateChecksum(List<Byte> values) {
@@ -232,7 +219,6 @@ public class Mbot2Communicator {
         for ( int value : values ) {
             checksum += value;
         }
-
         return checksum;
     }
 
@@ -242,7 +228,7 @@ public class Mbot2Communicator {
         if ( !serialPort.isOpen() ) {
             serialPort.openPort();
         }
-        for ( byte[] payload : payloads ) {
+        for ( byte[] payload : payloads) {
             payloadLength = payload.length;
             writtenBytes = serialPort.writeBytes(payload, payloadLength);
             if ( writtenBytes != payloadLength || !(writtenBytes == payloadLength && receiveAnswer()) ) {
@@ -250,6 +236,7 @@ public class Mbot2Communicator {
                 return new Pair<>(1, "Something went wrong while uploading the program. If this happens again, please reconnect the robot with the computer and try again");
             }
         }
+        LOG.info("Program successfully uploaded");
         return new Pair<>(0, "Program successfully uploaded");
     }
 
@@ -292,15 +279,5 @@ public class Mbot2Communicator {
             result[i] = arrayList.get(i);
         }
         return result;
-    }
-
-    private byte[] hexStringToByteArray(String s) {
-        int len = s.length();
-        byte[] data = new byte[len / 2];
-        for ( int i = 0; i < len; i += 2 ) {
-            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
-                + Character.digit(s.charAt(i + 1), 16));
-        }
-        return data;
     }
 }
