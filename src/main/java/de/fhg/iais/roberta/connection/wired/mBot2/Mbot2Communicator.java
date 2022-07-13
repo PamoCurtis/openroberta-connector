@@ -47,13 +47,6 @@ public class Mbot2Communicator {
         return deviceInfo;
     }
 
-    /**
-     * step 1: switch to upload mode
-     * step 2: send file header data frame
-     * step 3: send body header data frame
-     * step 4: repeat step 3 till last frame packet is send
-     * step 5: receive ok
-     */
     public Pair<Integer, String> uploadFile(String portName, String filePath) {
         portName = (SystemUtils.IS_OS_WINDOWS ? "" : "/dev/") + portName; // to hide the parameter, which should not be used
         try {
@@ -133,16 +126,9 @@ public class Mbot2Communicator {
         }
     }
 
-    /**
-     * File Type = 0x00
-     * File Size = 4 Byte, Size of file data
-     * XOR Checksum = 4 Byte, of file data. must be padded if file data length % 4 != 0
-     * File Name = max 256 Bytes. Absolute Path of file
-     */
     private List<Byte> generateHeader() {
         List<Byte> frame = new ArrayList<>();
         List<Byte> data = new ArrayList<>();
-
         String fileName = "/flash/main.py";
         int fileSize = this.fileContent.size();
         byte instructionId = 0x01;
@@ -164,17 +150,13 @@ public class Mbot2Communicator {
         return frame;
     }
 
-    /**
-     * Sent Size = 4 Byte, size of packets that have been sent
-     * File Block Data = Content of file, max 2^16 Bytes (length of instruction is 2 Bytes)
-     */
     private List<List<Byte>> generateBody() {
         List<List<Byte>> bodyArr = new ArrayList<>();
         List<Byte> frame;
         List<Byte> data;
-
         byte[] sentDataArray;
         int dataSizeToSend;
+        byte instructionID = 0x02;
         int maxSize = 0x40;
 
         for ( int sentData = 0x00; sentData < fileContent.size(); sentData += dataSizeToSend ) {
@@ -187,7 +169,7 @@ public class Mbot2Communicator {
                 data.add(value);
             }
             data.addAll(this.fileContent.subList(sentData, dataSizeToSend + sentData));
-            frame.add((byte) 0x02);
+            frame.add(instructionID);
             frame.add((byte) data.size());
             frame.add((byte) 0x00);
             frame.addAll(data);
@@ -223,51 +205,64 @@ public class Mbot2Communicator {
     }
 
     private Pair<Integer, String> sendPayload() {
+        Pair<Integer, String> result = new Pair<>(0, "Program successfully uploaded");
         int payloadLength;
         int writtenBytes;
         if ( !serialPort.isOpen() ) {
             serialPort.openPort();
         }
-        for ( byte[] payload : payloads) {
+        for ( byte[] payload : payloads ) {
             payloadLength = payload.length;
             writtenBytes = serialPort.writeBytes(payload, payloadLength);
-            if ( writtenBytes != payloadLength || !(writtenBytes == payloadLength && receiveAnswer()) ) {
-                serialPort.closePort();
-                return new Pair<>(1, "Something went wrong while uploading the program. If this happens again, please reconnect the robot with the computer and try again");
+            if ( writtenBytes != payloadLength || !receiveAnswer() ) {
+                result = new Pair<>(1, "Something went wrong while uploading the program. If this happens again, please reconnect the robot with the computer and try again");
+                break;
             }
         }
-        LOG.info("Program successfully uploaded");
-        return new Pair<>(0, "Program successfully uploaded");
+        if ( result.getFirst() == 0 ) {
+            LOG.info("Program successfully uploaded");
+        }
+        clearAndCloseAll();
+        return result;
     }
 
     private boolean receiveAnswer() {
+        byte id;
+        byte status;
         byte[] buf = new byte[128];
-        byte[] response;
         byte responseId = (byte) 0xF0;
         byte uploadModeId = 0x0D;
         byte ok = 0x00;
+        byte err = 0x01;
         long time = System.currentTimeMillis();
         while ( true ) {
             serialPort.readBytes(buf, 128);
             for ( int i = 0; i < buf.length; i++ ) {
-                if ( buf[i] != 0 ) {
-                    response = Arrays.copyOfRange(buf, i, buf.length - 1);
-                    if ( response[0] == (byte) 0xF3 ) {
-                        if ( response[i + 7] == responseId ) {
-                            if ( response[i + 10] == ok ) {
-                                return true;
+                if ( buf[i] != 0 && buf[i] == (byte) 0xF3 ) {
+                    if ( i + 7 < 128 ) {
+                        id = buf[i + 7];
+                        if ( id == responseId ) {
+                            if ( i + 10 < 128 ) {
+                                status = buf[i + 10];
+                                if ( status == ok ) {
+                                    return true;
+                                } else if ( status == err ) {
+                                    LOG.error("A package could not be delivered");
+                                    return false;
+                                }
                             } else {
-                                LOG.info("Error: Package could not be delivered");
-                                return false;
+                                break;
                             }
-                        } else if ( response[i + 7] == uploadModeId ) {
+                        } else if ( id == uploadModeId ) {
                             return true;
                         }
+                    } else {
+                        break;
                     }
                 }
             }
-            if ( (System.currentTimeMillis()) - time > 2000 ) {
-                LOG.info("No response received");
+            if ( (System.currentTimeMillis()) - time > 3000 ) {
+                LOG.error("No response received");
                 return false;
             }
         }
@@ -279,5 +274,11 @@ public class Mbot2Communicator {
             result[i] = arrayList.get(i);
         }
         return result;
+    }
+
+    private void clearAndCloseAll() {
+        serialPort.closePort();
+        payloads.clear();
+        fileContent.clear();
     }
 }
