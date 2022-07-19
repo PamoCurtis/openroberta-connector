@@ -10,7 +10,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.SystemUtils;
 import org.json.JSONObject;
@@ -32,6 +35,8 @@ public class Mbot2Communicator {
     private SerialPort serialPort;
     private final List<byte[]> payloads = new ArrayList<>();
     private final List<Byte> fileContent = new ArrayList<>();
+
+    private final Pattern responsePattern = Pattern.compile("f3(fa070001005ef001000((0)|(1))50|(f603000d00000d))f4");
 
     public Mbot2Communicator(IWiredRobot robot) {
         this.robot = robot;
@@ -55,6 +60,7 @@ public class Mbot2Communicator {
             generatePayloads();
             return sendPayload();
         } catch ( Exception e ) {
+            LOG.info(e.getMessage());
             return new Pair<>(1, "Error while uploading file");
         }
     }
@@ -227,45 +233,25 @@ public class Mbot2Communicator {
     }
 
     private boolean receiveAnswer() {
-        byte id;
-        byte status;
-        byte[] buf = new byte[128];
-        byte responseId = (byte) 0xF0;
-        byte uploadModeId = 0x0D;
-        byte ok = 0x00;
-        byte err = 0x01;
+        short bufSize = 128;
+        byte[] buf = new byte[bufSize];
+        String bufAsHexString;
+        Matcher responseMatcher;
         long time = System.currentTimeMillis();
-        while ( true ) {
-            serialPort.readBytes(buf, 128);
-            for ( int i = 0; i < buf.length; i++ ) {
-                if ( buf[i] != 0 && buf[i] == (byte) 0xF3 ) {
-                    if ( i + 7 < 128 ) {
-                        id = buf[i + 7];
-                        if ( id == responseId ) {
-                            if ( i + 10 < 128 ) {
-                                status = buf[i + 10];
-                                if ( status == ok ) {
-                                    return true;
-                                } else if ( status == err ) {
-                                    LOG.error("A package could not be delivered");
-                                    return false;
-                                }
-                            } else {
-                                break;
-                            }
-                        } else if ( id == uploadModeId ) {
-                            return true;
-                        }
-                    } else {
-                        break;
-                    }
+        while ( (System.currentTimeMillis()) - time < 3000 ) {
+            serialPort.readBytes(buf, bufSize);
+            bufAsHexString = Hex.encodeHexString(buf);
+            responseMatcher = responsePattern.matcher(bufAsHexString);
+            if ( responseMatcher.find() ) {
+                if ( responseMatcher.group(4) != null ) { //4 == regex error group
+                    LOG.error("A package could not be delivered");
+                    return false;
                 }
-            }
-            if ( (System.currentTimeMillis()) - time > 3000 ) {
-                LOG.error("No response received");
-                return false;
+                return true;
             }
         }
+        LOG.error("No response received");
+        return false;
     }
 
     private byte[] convertArrayListToByteArray(List<Byte> arrayList) {
