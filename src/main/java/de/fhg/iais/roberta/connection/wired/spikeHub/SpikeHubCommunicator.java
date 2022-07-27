@@ -2,13 +2,15 @@ package de.fhg.iais.roberta.connection.wired.spikeHub;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -28,27 +30,24 @@ public class SpikeHubCommunicator {
     private static final Logger LOG = LoggerFactory.getLogger(SpikeHubCommunicator.class);
 
     private final IWiredRobot robot;
-    private final int slotId = 0;
-    private final byte end = 0x0D;
 
-    private SerialPort comPort;
+    private SerialPort serialPort;
+
+    private List<JSONObject> payloads;
+
+    private String fileContentEncoded;
 
     SpikeHubCommunicator(IWiredRobot robot) {
         this.robot = robot;
     }
 
-    public Pair<Integer, String> handleUpload(String portName, String absolutePath) {
-        initSerialPort(portName);
+    public Pair<Integer, String> handleUpload(String portName, String absolutePath) throws IOException {
         try {
-            JSONObject payload;
-            payload = createJsonPayload("stop_execution", absolutePath);
-            uploadPayload(payload);
+            initSerialPort(portName);
+            extractAndEncodeFileInformation(absolutePath);
+            createJsonPayloads();
 
-            payload = createJsonPayload("start_write_program", absolutePath);
-            uploadPayload(payload);
-
-            payload = createJsonPayload("write_package", absolutePath);
-            uploadPayload(payload);
+            sendPayloads();
 
         } catch ( Exception e ) {
             return new Pair<>(1, "Something went wrong while uploading the file.");
@@ -81,136 +80,272 @@ public class SpikeHubCommunicator {
         return deviceInfo;
     }
 
-    private JSONObject createJsonPayload(String mode, String absolutePath) throws Exception {
-        return createJsonPayload(mode, absolutePath, new JSONObject());
+    private void extractAndEncodeFileInformation(String filePath) throws IOException {
+        File file = new File(filePath);
+        Path path = Paths.get(file.getAbsolutePath());
+        fileContentEncoded = Base64.getEncoder().encodeToString(FileUtils.readFileToByteArray(file));
     }
 
-    private JSONObject createJsonPayload(String mode, String absolutePath, JSONObject optParams) {
+    private void createJsonPayloads() {
+        payloads = new ArrayList<>();
+
+        createProgramTerminatePayload();
+        createStartWriteProgramPayload();
+        createWritePackagePayload();
+//        while(true){
+//            JSONObject payload = new JSONObject();
+//            JSONObject params = new JSONObject();
+//            JSONObject meta = new JSONObject();
+//            String id = RandomStringUtils.randomAlphanumeric(4);
+//            long nowTime = System.currentTimeMillis() / 1000;
+//
+//
+//            try {
+//                payload.put("m", "program_terminate");
+//                payload.put("p", meta);
+//                payload.put("i", id);
+//
+//                payload.put("m", "start_write_package");
+//
+//                meta.put("created", nowTime);
+//                meta.put("modified", nowTime);
+//                meta.put("name", "NepoProg.py");
+//                meta.put("type", "python");
+//                meta.put("project_id", "50uN1ZaRpHj2");
+//
+//                params.put("slotid", slotId);
+//                params.put("size", fileContent.size());
+//                params.put("meta", meta);
+//
+//                payload.put("p", params);
+//                payload.put("i", id);
+//
+//                payloads.add(payload);
+//
+//
+//                switch ( mode ) {
+//                    case "start_write_program":
+//                        JSONObject meta = new JSONObject();
+//                        long size = Files.size(path);
+//                        long nowTime = System.currentTimeMillis() / 1000;
+//
+//
+//
+//                    case "write_package":
+//                        byte[] encodedFile = encodeFileToBase64Binary(file);
+//                        params.put("data", encodedFile);
+//                        params.put("transferid", optParams.getString("transferid"));
+//                    case "program_terminate":
+//                    case "program_execute":
+//                    default:
+//
+//                }
+//                LOG.info("JSON Payload: {}", payload);
+//
+//            } catch ( Exception e ) {
+//                LOG.error("Error while creating Payload for Spike Hub: {}", e.getMessage());
+//            }
+//        }
+    }
+
+    private void createProgramTerminatePayload() {
+        JSONObject payload = new JSONObject();
+        payload.put("m", "program_terminate");
+        payload.put("p", new JSONObject());
+        payload.put("i", RandomStringUtils.randomAlphanumeric(4));
+
+        payloads.add(payload);
+    }
+
+    private void createStartWriteProgramPayload() {
         JSONObject payload = new JSONObject();
         JSONObject params = new JSONObject();
+        JSONObject meta = new JSONObject();
         String id = RandomStringUtils.randomAlphanumeric(4);
+        long nowTime = System.currentTimeMillis() / 1000;
+        int slotId = 0;
 
-        try {
-            File file = new File(absolutePath);
-            Path path = Paths.get(absolutePath);
-            switch ( mode ) {
-                case "start_write_program":
-                    JSONObject meta = new JSONObject();
-                    long size = Files.size(path);
-                    long nowTime = System.currentTimeMillis() / 1000;
+        meta.put("created", nowTime);
+        meta.put("modified", nowTime);
+        meta.put("name", "NepoProg.py");
+        meta.put("type", "python");
+        meta.put("project_id", "50uN1ZaRpHj2");
 
-                    meta.put("created", nowTime);
-                    meta.put("modified", nowTime);
-                    meta.put("name", file.getName());
-                    meta.put("type", "python");
-                    meta.put("project_id", "50uN1ZaRpHj2");
+        params.put("slotid", slotId);
+        params.put("size", fileContentEncoded.length());
+        params.put("meta", meta);
 
-                    params.put("slotid", slotId);
-                    params.put("size", size);
-                    params.put("meta", meta);
-                case "write_package":
-                    byte[] encodedFile = encodeFileToBase64Binary(file);
-                    params.put("data", encodedFile);
-                    params.put("transferid", optParams.getString("transferid"));
-                case "program_terminate":
-                case "program_execute":
-                default:
-                    payload.put("m", mode);
-                    payload.put("p", params);
-                    payload.put("i", id);
-            }
-            LOG.info("JSON Payload: {}", payload);
+        payload.put("m", "start_write_program");
+        payload.put("p", params);
+        payload.put("i", id);
 
-        } catch ( Exception e ) {
-            LOG.error("Error while creating Payload for Spike Hub: {}", e.getMessage());
+        payloads.add(payload);
+    }
+
+    private void createWritePackagePayload() {
+        JSONObject payload;
+        JSONObject param;
+        List<JSONObject> paramList = new ArrayList<>();
+        int maxDataSize = 512;
+        int end = 0;
+        int rest = 0;
+        for ( int i = 0; i < fileContentEncoded.length(); i += end ) {
+            param = new JSONObject();
+
+            end = Math.min(maxDataSize, fileContentEncoded.length() - rest);
+            rest += end;
+            param.put("data", fileContentEncoded.substring(i, i + end));
+//            param.put("transferid", RandomStringUtils.randomNumeric(5));
+
+            paramList.add(param);
         }
-        return payload;
+        for ( JSONObject params : paramList ) {
+            payload = new JSONObject();
+            payload.put("m", "write_package");
+            payload.put("p", params);
+            payload.put("i", RandomStringUtils.randomAlphanumeric(4));
+
+            payloads.add(payload);
+        }
     }
 
-    private JSONObject uploadPayload(JSONObject payload) throws IOException {
-        OutputStream outputStream = this.comPort.getOutputStream();
-        byte[] bytePayload = payload.toString().getBytes(StandardCharsets.UTF_8);
-        outputStream.write(bytePayload);
-        outputStream.write(end);
-        outputStream.close();
-        return receiveResponse(payload.getString("i"));
+//    private JSONObject uploadPayloads() throws IOException {
+//        OutputStream outputStream = this.serialPort.getOutputStream();
+//        for(JSONObject payload: payloads) {
+//            byte[] bytePayload = payload.toString().getBytes(StandardCharsets.UTF_8);
+//            outputStream.write(bytePayload);
+//            outputStream.write(0x0D);
+//            receiveResponse(payload.getString("i"));
+//        }
+//        return new JSONObject();
+//    }
+
+    //    private JSONObject receiveResponse(String id) throws IOException {
+//
+//        while ( true ) {
+//            JSONObject response = receiveMessage(1);
+//
+//            if ( response.has("i") && response.getString("i").equals(id) ) {
+//                if ( response.has("e") ) {
+//                    return null;
+//                }
+//                LOG.info(response.getString("r"));
+//                return response.getJSONObject("r");
+//
+//            }
+//            LOG.info("Response while waiting: {}", response);
+//        }
+//    }
+//
+//    private JSONObject responseToJson(int timeout) throws IOException {
+//        InputStream inputStream = this.serialPort.getInputStream();
+//        long startTime = System.currentTimeMillis() / 1000;
+//        int elapsed = 0;
+//        byte[] receiveBuffer;
+//        String result;
+//
+//        while ( true ) {
+//            receiveBuffer = new byte[inputStream.available()];
+//            int pos = findEndValue(receiveBuffer);
+//
+//            if ( pos >= 0 ) {
+//                result = receiveBuffer.toString().substring(0, pos);
+//
+//                try {
+//                    JSONObject response = new JSONObject(result);
+//                    return response;
+//                } catch ( JSONException e ) {
+//                    LOG.error("Cannot parse JSON: {}", result);
+//                }
+//
+//            }
+//
+//            if ( pos >= inputStream.available() ) {
+//                inputStream.read(receiveBuffer);
+//            }
+//        }
+//    }
+    private Pair<Integer, String> sendPayloads() throws IOException {
+        Pair<Integer, String> result = new Pair<>(0, "Program successfully uploaded");
+        OutputStream out = this.serialPort.getOutputStream();
+
+        if ( !serialPort.isOpen() ) {
+            serialPort.openPort();
+        }
+        for ( JSONObject payload : payloads ) {
+            byte[] payloadAsByteArr = payload.toString().getBytes(StandardCharsets.UTF_8);
+            out.write(payloadAsByteArr, 0, payloadAsByteArr.length);
+            out.write((byte) 0x0D);
+
+            if ( !receiveAnswer(payload.getString("i")) ) {
+                result = new Pair<>(1, "Something went wrong while uploading the program. If this happens again, please reconnect the robot with the computer and try again");
+                break;
+            }
+        }
+        if ( result.getFirst() == 0 ) {
+            LOG.info("Program successfully uploaded");
+        }
+        //clearAndCloseAll();
+        return result;
     }
 
-    private JSONObject receiveResponse(String id) throws IOException {
-
-        while ( true ) {
-            JSONObject response = receiveMessage(1);
-
-            if ( response.has("i") && response.getString("i").equals(id) ) {
-                if ( response.has("e") ) {
-                    return null;
+    private boolean receiveAnswer(String id) {
+        Pattern responsePattern = Pattern.compile(String.format("\\{.*%s.*}$\\x0D", id));
+        short bufSize = 128;
+        byte[] buf = new byte[bufSize];
+        String answer;
+        Matcher responseMatcher;
+        long time = System.currentTimeMillis();
+        while ( (System.currentTimeMillis()) - time < 10000 ) {
+            serialPort.readBytes(buf, bufSize);
+            answer = new String(buf, StandardCharsets.UTF_8);
+            LOG.info(answer);
+            responseMatcher = responsePattern.matcher(answer);
+            if ( responseMatcher.find() ) {
+                LOG.info("response: " + responseMatcher.group());
+                JSONObject jsonAnswer = new JSONObject(responseMatcher.group());
+                if ( jsonAnswer.getString("i") != id ) {
+                    continue;
                 }
-                LOG.info(response.getString("r"));
-                return response.getJSONObject("r");
-
-            }
-            LOG.info("Response while waiting: {}", response);
-        }
-    }
-
-    private JSONObject receiveMessage(int timeout) throws IOException {
-        InputStream inputStream = this.comPort.getInputStream();
-        long startTime = System.currentTimeMillis() / 1000;
-        int elapsed = 0;
-        byte[] receiveBuffer;
-        String result;
-
-        while ( true ) {
-            receiveBuffer = new byte[inputStream.available()];
-            int pos = findEndValue(receiveBuffer);
-
-            if ( pos >= 0 ) {
-                result = receiveBuffer.toString().substring(0, pos);
-
                 try {
-                    JSONObject response = new JSONObject(result);
-                    return response;
+                    String transferid = jsonAnswer.getString("transferid");
+
                 } catch ( JSONException e ) {
-                    LOG.error("Cannot parse JSON: {}", result);
+                    return true;
                 }
-
-            }
-
-            if ( pos >= inputStream.available() ) {
-                inputStream.read(receiveBuffer);
             }
         }
-        return null;
+        LOG.error("No response received");
+        return false;
     }
 
-    private int findEndValue(byte[] receiveBuffer) {
-        for ( int pos = 0; pos < receiveBuffer.length; pos++ ) {
-            if ( Byte.compare(receiveBuffer[pos], end) == 0 ) {
-                return pos;
-            }
-        }
-        return -1;
-    }
+//    private int findEndValue(byte[] receiveBuffer) {
+//        for ( int pos = 0; pos < receiveBuffer.length; pos++ ) {
+//            if ( Byte.compare(receiveBuffer[pos], end) == 0 ) {
+//                return pos;
+//            }
+//        }
+//        return -1;
+//    }
 
-    private byte[] encodeFileToBase64Binary(File file) {
-        byte[] encodedFile = new byte[] {};
-        try {
-            encodedFile = Base64.getEncoder().encode(FileUtils.readFileToByteArray(file));
-        } catch ( IOException e ) {
-            LOG.error("Error while encoding file");
-        }
-        return encodedFile;
-    }
+//    private byte[] encodeFileToBase64Binary(File file) {
+//        try {
+//            byte[] encodedFile = Base64.getEncoder().encode(FileUtils.readFileToByteArray(file));
+//            return encodedFile;
+//        } catch ( IOException e ) {
+//            LOG.error("Error while encoding file");
+//        }
+//    }
 
     private void initSerialPort(String portName) {
         portName = (SystemUtils.IS_OS_WINDOWS ? "" : "/dev/") + portName; // to hide the parameter, which should not be used
-        this.comPort = SerialPort.getCommPort(portName);
-        this.comPort.setBaudRate(115200);
-        this.comPort.openPort(0);
+        this.serialPort = SerialPort.getCommPort(portName);
+        this.serialPort.setBaudRate(115200);
+        this.serialPort.openPort(0);
         LOG.info("Serial Communication is initialized: {} {} {}",
-            this.comPort.getSystemPortName(),
-            this.comPort.getDescriptivePortName(),
-            this.comPort.getPortDescription());
+            this.serialPort.getSystemPortName(),
+            this.serialPort.getDescriptivePortName(),
+            this.serialPort.getPortDescription());
     }
 
     private byte[] receiveResponse() {
