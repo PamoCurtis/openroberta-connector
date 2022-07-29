@@ -3,15 +3,15 @@ package de.fhg.iais.roberta.connection.wired.spikeHub;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.SystemUtils;
@@ -34,7 +34,9 @@ public class SpikeHubCommunicator {
 
     private List<JSONObject> payloads;
 
-    private String fileContentEncoded;
+    private byte[] fileContentEncoded;
+
+    private boolean transferIdAdded = false;
 
     SpikeHubCommunicator(IWiredRobot robot) {
         this.robot = robot;
@@ -45,7 +47,7 @@ public class SpikeHubCommunicator {
         try {
             initSerialPort(portName);
             extractAndEncodeFileInformation(absolutePath);
-            createMainJsonPayloads();
+            createJsonPayloads();
 
             result = sendPayloads();
 
@@ -77,15 +79,17 @@ public class SpikeHubCommunicator {
 
     private void extractAndEncodeFileInformation(String filePath) throws IOException {
         File file = new File(filePath);
-        Path path = Paths.get(file.getAbsolutePath());
-        fileContentEncoded = Base64.getEncoder().encodeToString(FileUtils.readFileToByteArray(file));
+
+        fileContentEncoded = FileUtils.readFileToByteArray(file);
     }
 
-    private void createMainJsonPayloads() {
+    private void createJsonPayloads() {
         payloads = new ArrayList<>();
 
         createProgramTerminatePayload();
         createStartWriteProgramPayload();
+        createWritePackagePayload();
+        createExecuteProgramPayload();
     }
 
     private void createProgramTerminatePayload() {
@@ -112,7 +116,7 @@ public class SpikeHubCommunicator {
         meta.put("project_id", "50uN1ZaRpHj2");
 
         params.put("slotid", slotId);
-        params.put("size", fileContentEncoded.length());
+        params.put("size", fileContentEncoded.length);
         params.put("meta", meta);
 
         payload.put("m", "start_write_program");
@@ -122,20 +126,19 @@ public class SpikeHubCommunicator {
         payloads.add(payload);
     }
 
-    private void createWritePackagePayload(String transferid) {
+    private void createWritePackagePayload() {
         JSONObject payload;
         JSONObject param;
         List<JSONObject> paramList = new ArrayList<>();
         int maxDataSize = 512;
         int end;
         int rest = 0;
-        for ( int i = 0; i < fileContentEncoded.length(); i += end ) {
+        for ( int i = 0; i < fileContentEncoded.length; i += end ) {
             param = new JSONObject();
 
-            end = Math.min(maxDataSize, fileContentEncoded.length() - rest);
+            end = Math.min(maxDataSize, fileContentEncoded.length - rest);
             rest += end;
-            param.put("data", fileContentEncoded.substring(i, i + end));
-            param.put("transferid", transferid);
+            param.put("data", Base64.getEncoder().encodeToString(Arrays.copyOfRange(fileContentEncoded, i, i + end)));
 
             paramList.add(param);
         }
@@ -151,27 +154,38 @@ public class SpikeHubCommunicator {
 
     private void createExecuteProgramPayload() {
         JSONObject payload = new JSONObject();
+        JSONObject param = new JSONObject();
+
+        param.put("slotid", 0);
 
         payload.put("m", "program_execute");
-        payload.put("p", new JSONObject());
+        payload.put("p", param);
         payload.put("i", RandomStringUtils.randomAlphanumeric(4));
+
+        payloads.add(payload);
     }
 
-    private Pair<Integer, String> sendPayloads() throws IOException, InterruptedException {
+    private void addTransferId(String transferId) {
+        for ( JSONObject payload : payloads ) {
+            if ( payload.getString("m").equals("write_package") ) {
+                payload.getJSONObject("p").put("transferid", transferId);
+            }
+        }
+    }
+
+    private Pair<Integer, String> sendPayloads() throws InterruptedException {
         Pair<Integer, String> result = new Pair<>(0, "Program successfully uploaded");
         int bytesWritten;
         if ( !this.serialPort.isOpen() ) {
             this.serialPort.openPort();
         }
 
-        for ( JSONObject payload : new ArrayList<>(payloads) ) { //Umändern
+        for ( JSONObject payload : payloads ) {
             String id = payload.getString("i");
             String payloadAsString = payload + "\r";
             byte[] payloadAsBytes = payloadAsString.getBytes(StandardCharsets.UTF_8);
-
             find0x0D();
             bytesWritten = this.serialPort.writeBytes(payloadAsBytes, payloadAsBytes.length);
-
             if ( bytesWritten != payloadAsBytes.length || !receiveResponse(id) ) {
                 result = new Pair<>(1, "Something went wrong while uploading the program. If this happens again, please reconnect the robot with the computer and try again");
                 break;
@@ -188,21 +202,16 @@ public class SpikeHubCommunicator {
         String answer;
         long time = System.currentTimeMillis();
 
-        while ( (System.currentTimeMillis()) - time < 10000 ) {
+        while ( (System.currentTimeMillis()) - time < 3000 ) {
             this.serialPort.readBytes(buffer, bufSize);
-
             answer = new String(buffer, StandardCharsets.UTF_8);
             responseMatcher = findResponsePattern.matcher(answer);
-
             if ( responseMatcher.find() ) {
-
                 JSONObject jsonAnswer = new JSONObject(responseMatcher.group());
-
                 if ( jsonAnswer.getString("i").equals(id) ) {
-                    try {
-                        createWritePackagePayload(jsonAnswer.getJSONObject("r").getString("transferid"));
-                    } catch ( Exception ignored ) {
-
+                    if ( !transferIdAdded && jsonAnswer.getJSONObject("r").has("transferid") ) {
+                        addTransferId(jsonAnswer.getJSONObject("r").getString("transferid"));
+                        transferIdAdded = true;
                     }
                     return true;
                 }
@@ -218,12 +227,12 @@ public class SpikeHubCommunicator {
         byte[] buffer = new byte[bufSize];
         String answer;
         long time = System.currentTimeMillis();
+
         while ( (System.currentTimeMillis()) - time < 10000 ) {
             this.serialPort.readBytes(buffer, bufSize);
             answer = new String(buffer, StandardCharsets.UTF_8);
             if ( answer.contains("\r") ) {
-                LOG.info("Found 0x0D");
-                break;
+                return;
             }
         }
     }
