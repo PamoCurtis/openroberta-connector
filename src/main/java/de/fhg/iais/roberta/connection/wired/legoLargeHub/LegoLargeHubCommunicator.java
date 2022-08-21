@@ -1,4 +1,4 @@
-package de.fhg.iais.roberta.connection.wired.spikeHub;
+package de.fhg.iais.roberta.connection.wired.legoLargeHub;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,9 +26,9 @@ import de.fhg.iais.roberta.connection.wired.ClearBufferThread;
 import de.fhg.iais.roberta.connection.wired.IWiredRobot;
 import de.fhg.iais.roberta.util.Pair;
 
-public class SpikeHubCommunicator {
+public class LegoLargeHubCommunicator {
 
-    private static final Logger LOG = LoggerFactory.getLogger(SpikeHubCommunicator.class);
+    private static final Logger LOG = LoggerFactory.getLogger(LegoLargeHubCommunicator.class);
 
     private final IWiredRobot robot;
     private final ClearBufferThread clearBufferThread;
@@ -41,7 +41,7 @@ public class SpikeHubCommunicator {
 
     private boolean transferIdAdded = false;
 
-    SpikeHubCommunicator(IWiredRobot robot) {
+    LegoLargeHubCommunicator(IWiredRobot robot) {
         this.robot = robot;
         this.clearBufferThread = new ClearBufferThread(robot.getPort());
         initSerialPort(this.robot.getPort());

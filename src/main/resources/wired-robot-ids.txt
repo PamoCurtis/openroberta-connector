@@ -15,7 +15,8 @@
 # Arduino Nano 33 BLE:          nano33ble
 # ROB3RTA:                      rob3rta
 # FestoBionicFlower:            festobionicflower
-# Spike Prime/Robot Inventor    spikehub
+# Spike Prime:                   spikeprime
+# Robot Inventor               robotinventor
 
 2341,0043,uno
 2A03,0043,uno
@@ -30,8 +31,8 @@
 0403,6015,festobionic
 16C0,0933,rob3rta
 0403,6001,festobionicflower
-0694,0010,spikehub
-0694,0009,spikehub
+0694,0009,spikeprime
+0694,0010,robotinventor
 
 # nano33ble: 005A for flashing, 805A for serial communication
 2341,005A,nano33ble
