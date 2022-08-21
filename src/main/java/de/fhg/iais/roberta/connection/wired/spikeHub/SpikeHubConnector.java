@@ -68,39 +68,50 @@ public class SpikeHubConnector extends AbstractConnector<SpikeHub> {
                 try {
                     JSONObject serverResponse = this.serverCommunicator.pushRequest(this.brickData);
                     String cmdKey = serverResponse.getString(KEY_CMD);
-                    if ( cmdKey.equals(CMD_REPEAT) ) {
-                        break;
-                    } else if ( cmdKey.equals(CMD_DOWNLOAD) ) {
-                        LOG.info("Download user program");
-                        try {
-                            Pair<byte[], String> program = this.serverCommunicator.downloadProgram(this.brickData);
-                            File tmp = File.createTempFile(program.getSecond(), "");
-                            tmp.deleteOnExit();
+                    switch ( cmdKey ) {
+                        case CMD_REPEAT:
+                            break;
+                        case CMD_DOWNLOAD:
+                            LOG.info("Download user program");
+                            try {
+                                Pair<byte[], String> program = this.serverCommunicator.downloadProgram(this.brickData);
+                                File tmp = File.createTempFile(program.getSecond(), "");
+                                tmp.deleteOnExit();
 
-                            if ( !tmp.exists() ) {
-                                throw new FileNotFoundException("File " + tmp.getAbsolutePath() + " does not exist.");
-                            }
+                                if ( !tmp.exists() ) {
+                                    throw new FileNotFoundException("File " + tmp.getAbsolutePath() + " does not exist.");
+                                }
 
-                            try (FileOutputStream os = new FileOutputStream(tmp)) {
+                                try (FileOutputStream os = new FileOutputStream(tmp)) {
                                 os.write(program.getFirst());
                             }
-
                             this.fire(State.WAIT_UPLOAD);
-                            Pair<Integer, String> result = this.spikeHubCommunicator.handleUpload(this.robot.getPort(), tmp.getAbsolutePath());
+                                Pair<Integer, String> result = this.spikeHubCommunicator.handleUpload(tmp.getAbsolutePath());
                             if ( result.getFirst() != 0 ) {
                                 this.fire(State.ERROR_UPLOAD_TO_ROBOT.setAdditionalInfo(result.getSecond()));
                                 this.fire(State.WAIT_FOR_CMD);
                             }
-                        } catch ( FileNotFoundException e ) {
-                            LOG.info("File not found: {}", e.getMessage());
-                            this.fire(State.ERROR_UPLOAD_TO_ROBOT);
-                            this.fire(State.WAIT_FOR_CMD);
-                        } catch ( IOException io ) {
-                            LOG.info("Download and run failed: {}", io.getMessage());
-                            LOG.info("Do not give up yet - make the next push request");
-                            this.fire(State.ERROR_UPLOAD_TO_ROBOT);
-                            this.fire(State.WAIT_FOR_CMD);
-                        }
+                            } catch ( FileNotFoundException e ) {
+                                LOG.info("File not found: {}", e.getMessage());
+                                this.fire(State.ERROR_UPLOAD_TO_ROBOT);
+                                this.fire(State.WAIT_FOR_CMD);
+                            } catch ( IOException io ) {
+                                LOG.info("Download and run failed: {}", io.getMessage());
+                                LOG.info("Do not give up yet - make the next push request");
+                                this.fire(State.ERROR_UPLOAD_TO_ROBOT);
+                                this.fire(State.WAIT_FOR_CMD);
+                            }
+                            break;
+                        case CMD_CONFIGURATION:
+                            LOG.info("Configuration");
+                            break;
+                        case CMD_UPDATE:
+                            LOG.info("Firmware update not necessary and not supported!");
+                            break;
+                        case CMD_ABORT:
+                            LOG.error("Unexpected response from server: {}", cmdKey);
+                            this.reset(State.ERROR_HTTP);
+                            break;
                     }
                 } catch ( IOException | JSONException e ) {
                     LOG.error("WAIT_FOR_CMD {}", e.getMessage());

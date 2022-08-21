@@ -31,6 +31,7 @@
 16C0,0933,rob3rta
 0403,6001,festobionicflower
 0694,0010,spikehub
+0694,0009,spikehub
 
 # nano33ble: 005A for flashing, 805A for serial communication
 2341,005A,nano33ble

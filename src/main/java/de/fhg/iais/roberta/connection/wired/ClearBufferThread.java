@@ -18,15 +18,14 @@ public class ClearBufferThread extends Thread {
         this.portName = (SystemUtils.IS_OS_WINDOWS ? "" : "/dev/") + portName;
     }
 
-    public SerialPort exit() throws InterruptedException {
+    public boolean exit() throws InterruptedException {
         if ( thread != null && thread.isAlive() ) {
             exitThread = true;
         }
-        return serialPort;
-    }
-
-    public boolean isRunning() {
-        return thread != null;
+        if ( serialPort != null && serialPort.isOpen() ) {
+            return serialPort.closePort();
+        }
+        return true;
     }
 
     @Override
@@ -38,7 +37,7 @@ public class ClearBufferThread extends Thread {
             try {
                 Thread.sleep(100);
             } catch ( InterruptedException e ) {
-                e.printStackTrace();
+                LOG.info(e.getMessage());
             }
         }
         LOG.info("Stop clearing buffer");
@@ -47,14 +46,14 @@ public class ClearBufferThread extends Thread {
     public void start(SerialPort serialPortObject) {
         LOG.info("Start clearing buffer until next program upload");
         initSerialPort(serialPortObject);
-        thread = new Thread(this, portName);
+        thread = new Thread(this, "Clear buffer of " + portName);
         thread.start();
     }
 
     private void initSerialPort(SerialPort serialPortObject) {
-        this.serialPort = serialPortObject;
-        if ( !this.serialPort.isOpen() ) {
-            this.serialPort.openPort();
+        serialPort = serialPortObject;
+        if ( !serialPort.isOpen() ) {
+            serialPort.openPort();
         }
     }
 }
