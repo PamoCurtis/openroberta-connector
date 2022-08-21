@@ -130,6 +130,7 @@ public class Mbot2Communicator {
             dataFrame.clear();
             uploadFrame.clear();
         }
+        LOG.info("Generated " + payloads.size() + " payloads");
     }
 
     private List<Byte> generateHeader() {
@@ -250,7 +251,7 @@ public class Mbot2Communicator {
                 return true;
             }
         }
-        LOG.error("No response received");
+        LOG.error("Timeout: No response received");
         return false;
     }
 
